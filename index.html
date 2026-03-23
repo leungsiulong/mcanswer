@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MC 答案紙掃描與對齊系統</title>
+    <!-- 引入 Tailwind CSS 以快速美化介面 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 確保畫布自適應螢幕大小，特別是手機端 */
+        canvas {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 font-sans text-gray-800">
+
+    <div class="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow-lg">
+        <h1 class="text-2xl font-bold text-blue-600 mb-4 text-center">MC 答案紙掃描與對齊系統</h1>
+        
+        <!-- 狀態提示區域 -->
+        <div id="status" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4 rounded">
+            正在載入 OpenCV.js 電腦視覺引擎，請稍候...
+        </div>
+
+        <!-- 操作按鈕區域 -->
+        <div class="flex flex-wrap gap-4 justify-center mb-6">
+            <button id="startCameraBtn" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded disabled:opacity-50" disabled>
+                開啟相機
+            </button>
+            <button id="captureBtn" class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded hidden">
+                拍照並對齊
+            </button>
+            <div class="relative">
+                <input type="file" id="fileInput" accept="image/*" class="hidden">
+                <button id="uploadBtn" class="bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded disabled:opacity-50" disabled>
+                    上傳圖片
+                </button>
+            </div>
+        </div>
+
+        <!-- 影像顯示區域 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- 原始/相機畫面 -->
+            <div class="flex flex-col items-center">
+                <h2 class="text-lg font-semibold mb-2">原始畫面</h2>
+                <video id="video" autoplay playsinline class="hidden w-full max-w-sm border border-gray-300 rounded"></video>
+                <img id="imageSrc" class="hidden w-full max-w-sm" />
+                <canvas id="canvasInput" class="hidden"></canvas>
+            </div>
+            
+            <!-- 處理後對齊的畫面 -->
+            <div class="flex flex-col items-center">
+                <h2 class="text-lg font-semibold mb-2">擷取與對齊結果</h2>
+                <canvas id="canvasOutput"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM 元素綁定
+        const statusEl = document.getElementById('status');
+        const startCameraBtn = document.getElementById('startCameraBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('fileInput');
+        const video = document.getElementById('video');
+        const imageSrc = document.getElementById('imageSrc');
+        const canvasInput = document.getElementById('canvasInput');
+        const canvasOutput = document.getElementById('canvasOutput');
+
+        let streaming = false;
+        let stream = null;
+
+        // 系統初始化完成的共用函數
+        function initApp() {
+            statusEl.className = 'bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4 rounded';
+            statusEl.innerText = '系統準備就緒！請「開啟相機」或「上傳圖片」。';
+            startCameraBtn.disabled = false;
+            uploadBtn.disabled = false;
+        }
+
+        // 當 OpenCV 載入完成時觸發
+        function onOpenCvReady() {
+            // OpenCV.js 在不同環境下初始化方式可能略有不同，這裡做增強相容性處理
+            if (typeof cv !== 'undefined') {
+                if (cv instanceof Promise) {
+                    cv.then((target) => {
+                        window.cv = target;
+                        initApp();
+                    }).catch(err => console.error(err));
+                } else if (cv.getBuildInformation) {
+                    // 已經初始化完成
+                    initApp();
+                } else {
+                    // 等待 WASM 編譯完成
+                    cv['onRuntimeInitialized'] = () => {
+                        initApp();
+                    };
+                }
+            } else {
+                // 若載入延遲，嘗試設定一個定時器檢查
+                let checkCv = setInterval(() => {
+                    if (typeof cv !== 'undefined' && cv.Mat) {
+                        clearInterval(checkCv);
+                        initApp();
+                    }
+                }, 500);
+            }
+        }
+
+        // OpenCV 載入失敗時觸發
+        function onOpenCvError() {
+            statusEl.className = 'bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded';
+            statusEl.innerHTML = 'OpenCV 載入失敗！所有備用來源皆無法連線。<br><br><strong>可能原因：</strong>學校網絡或防火牆阻擋了外部核心程式庫。<br><strong>快速測試：</strong>請嘗試<strong>切換至手機 4G/5G 網絡 (熱點分享)</strong>，然後重新整理本頁面看看是否能成功。';
+        }
+
+        // --- 自動嘗試多個來源載入 OpenCV ---
+        // 加入 Cloudflare cdnjs (全球最常用，極少被擋) 並保留其他備用
+        const cvUrls = [
+            'https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.8.0/opencv.js',
+            'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.8.0/build/opencv.js',
+            'https://docs.opencv.org/4.5.2/opencv.js'
+        ];
+        let cvUrlIndex = 0;
+
+        function loadOpenCV() {
+            if (cvUrlIndex >= cvUrls.length) {
+                onOpenCvError(); // 所有來源都失敗了
+                return;
+            }
+            
+            statusEl.innerText = `正在載入 OpenCV.js 電腦視覺引擎... (嘗試來源 ${cvUrlIndex + 1}/${cvUrls.length})`;
+            
+            let script = document.createElement('script');
+            script.src = cvUrls[cvUrlIndex];
+            script.async = true;
+            script.crossOrigin = "anonymous"; // 加入跨網域安全宣告，降低被擋機率
+            script.onload = onOpenCvReady;
+            script.onerror = () => {
+                console.warn(`來源 ${cvUrls[cvUrlIndex]} 載入失敗，嘗試下一個...`);
+                cvUrlIndex++;
+                loadOpenCV(); // 嘗試下一個網址
+            };
+            document.head.appendChild(script); // 改為附加到 head 中
+        }
+
+        // 啟動自動載入程序
+        loadOpenCV();
+
+        // --- 功能：開啟相機 ---
+        startCameraBtn.addEventListener('click', async () => {
+            if (streaming) return;
+            try {
+                // 請求後置鏡頭（若有）
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+                video.srcObject = stream;
+                video.classList.remove('hidden');
+                imageSrc.classList.add('hidden');
+                captureBtn.classList.remove('hidden');
+                video.play();
+                streaming = true;
+                statusEl.innerText = '相機已開啟，請將答案紙完整放入畫面中，然後點擊「拍照並對齊」。';
+            } catch (err) {
+                console.error("相機開啟失敗:", err);
+                statusEl.innerText = '無法存取相機，請確認權限或改用上傳圖片功能。';
+            }
+        });
+
+        // --- 功能：拍照並處理 ---
+        captureBtn.addEventListener('click', () => {
+            if (!streaming) return;
+            // 將相機畫面繪製到 canvas
+            canvasInput.width = video.videoWidth;
+            canvasInput.height = video.videoHeight;
+            let ctx = canvasInput.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvasInput.width, canvasInput.height);
+            
+            // 執行影像處理
+            processImage(canvasInput);
+        });
+
+        // --- 功能：上傳圖片 ---
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length === 0) return;
+            // 停止相機（如果在執行中）
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.classList.add('hidden');
+                captureBtn.classList.add('hidden');
+                streaming = false;
+            }
+
+            let file = e.target.files[0];
+            let reader = new FileReader();
+            reader.onload = function(event) {
+                imageSrc.onload = function() {
+                    canvasInput.width = imageSrc.width;
+                    canvasInput.height = imageSrc.height;
+                    let ctx = canvasInput.getContext('2d');
+                    ctx.drawImage(imageSrc, 0, 0, imageSrc.width, imageSrc.height);
+                    
+                    imageSrc.classList.remove('hidden');
+                    
+                    // 執行影像處理
+                    processImage(canvasInput);
+                }
+                imageSrc.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+            statusEl.innerText = '圖片已上傳，正在處理...';
+        });
+
+        // --- 核心功能：使用 OpenCV 尋找四個角並拉平影像 ---
+        function processImage(sourceCanvas) {
+            try {
+                // 1. 讀取影像
+                let src = cv.imread(sourceCanvas);
+                let dst = new cv.Mat();
+                let gray = new cv.Mat();
+                
+                // 2. 影像預處理：轉灰階 -> 高斯模糊 (去雜訊) -> Canny 邊緣偵測
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+                let edges = new cv.Mat();
+                cv.Canny(gray, edges, 75, 200);
+
+                // 3. 尋找輪廓
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+                let maxArea = 0;
+                let maxContour = null;
+
+                // 4. 找出最大的四邊形輪廓（這通常代表整張答案紙的邊界，包含了四個角的三角形）
+                for (let i = 0; i < contours.size(); ++i) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    
+                    // 過濾掉太小的雜訊
+                    if (area > 1000) {
+                        let tmp = new cv.Mat();
+                        let perimeter = cv.arcLength(cnt, true);
+                        // 近似多邊形，尋找角點
+                        cv.approxPolyDP(cnt, tmp, 0.02 * perimeter, true);
+                        
+                        // 如果是四邊形，且面積大於之前的紀錄
+                        if (tmp.rows === 4 && area > maxArea) {
+                            maxArea = area;
+                            if (maxContour) maxContour.delete(); // 釋放舊的記憶體
+                            maxContour = tmp;
+                        } else {
+                            tmp.delete();
+                        }
+                    }
+                    cnt.delete();
+                }
+
+                // 5. 如果找到四個角，進行透視變換 (拉平)
+                if (maxContour) {
+                    // 提取四個角點並排序 (左上, 右上, 右下, 左下)
+                    let points = [];
+                    for (let i = 0; i < 4; i++) {
+                        points.push({x: maxContour.data32S[i*2], y: maxContour.data32S[i*2+1]});
+                    }
+                    
+                    // 根據座標總和與差值排序頂點
+                    points.sort((a, b) => (a.y + a.x) - (b.y + b.x)); // 第一個是左上，最後一個是右下
+                    let tl = points[0];
+                    let br = points[3];
+                    
+                    let remaining = [points[1], points[2]];
+                    remaining.sort((a, b) => (a.y - a.x) - (b.y - b.x)); // 第一個是右上，第二個是左下
+                    let tr = remaining[0];
+                    let bl = remaining[1];
+
+                    // 設定輸出的標準大小 (例如 A4 比例)
+                    const outputWidth = 800;
+                    const outputHeight = 1130; // 約 A4 比例
+                    
+                    // 定義來源點與目標點的矩陣
+                    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
+                    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outputWidth, 0, outputWidth, outputHeight, 0, outputHeight]);
+                    
+                    // 計算透視變換矩陣並執行裁切
+                    let M = cv.getPerspectiveTransform(srcTri, dstTri);
+                    cv.warpPerspective(src, dst, M, new cv.Size(outputWidth, outputHeight));
+                    
+                    // 顯示結果
+                    cv.imshow('canvasOutput', dst);
+                    statusEl.innerText = '處理成功！影像已完美對齊。接下來可以進行選擇題讀取。';
+
+                    // 釋放記憶體
+                    srcTri.delete(); dstTri.delete(); M.delete();
+                } else {
+                    statusEl.innerText = '找不到答案紙邊界或四個角！請確保答案紙完整在畫面中且背景對比明顯。';
+                    // 若失敗，顯示原始圖片
+                    cv.imshow('canvasOutput', src);
+                }
+
+                // 釋放全域記憶體
+                src.delete(); dst.delete(); gray.delete(); edges.delete();
+                contours.delete(); hierarchy.delete();
+                if (maxContour) maxContour.delete();
+
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = '影像處理過程中發生錯誤。';
+            }
+        }
+    </script>
+</body>
+</html>
