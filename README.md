@@ -1,4 +1,4 @@
-#  Student Score Management System
+# 🎓 Student Score Management System
 
 A comprehensive, command-line-based Python application designed to help teachers and administrators manage, analyze, and visualize student exam scores. 
 
@@ -6,19 +6,19 @@ This system reads and writes data using simple CSV files, making it easy to inte
 
 ---
 
-##  Features
+## ✨ Features
 
-* ** Auto-Dependency Installation:** Automatically detects and installs required third-party libraries (like `matplotlib`) if they are missing on the user's computer.
-* ** Easy Data Storage (CSV):** Automatically reads from and writes to class-specific CSV files (e.g., `Data - 1A.csv`).
-* ** Class Management (CRUD):** Easily View, Add, Edit, and Delete student records directly from the terminal.
-* ** Data Visualization:** Generates and exports beautiful bar charts (`.png`) comparing class averages using Matplotlib.
-* ** PDF Report Cards:** Automatically generates stylized, individual PDF report cards for an entire class in seconds.
-* ** Statistical Analysis:** Calculate pass rates, find the highest/lowest scorers in a grade, and calculate class rankings automatically.
-* ** Global Search:** Instantly look up any student's grades using their unique Student ID.
+* **🧠 Auto-Dependency Installation:** Automatically detects and installs required third-party libraries (like `matplotlib`) if they are missing on the user's computer.
+* **📂 Easy Data Storage (CSV):** Automatically reads from and writes to class-specific CSV files (e.g., `Data - 1A.csv`).
+* **📝 Class Management (CRUD):** Easily View, Add, Edit, and Delete student records directly from the terminal.
+* **📊 Data Visualization:** Generates and exports beautiful bar charts (`.png`) comparing class averages using Matplotlib.
+* **📄 PDF Report Cards:** Automatically generates stylized, individual PDF report cards for an entire class in seconds.
+* **📈 Statistical Analysis:** Calculate pass rates, find the highest/lowest scorers in a grade, and calculate class rankings automatically.
+* **🔍 Global Search:** Instantly look up any student's grades using their unique Student ID.
 
 ---
 
-##  Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 * **Python 3.6 or higher** installed on your computer.
